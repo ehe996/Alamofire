@@ -242,6 +242,7 @@ open class SessionManager {
         }
     }
 
+    //// DataRequest数据请求，后面DownloadRequest、UploadRequest几乎都是这个流程
     /// Creates a `DataRequest` to retrieve the contents of a URL based on the specified `urlRequest`.
     ///
     /// If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
@@ -255,13 +256,21 @@ open class SessionManager {
 
         do {
             originalRequest = try urlRequest.asURLRequest()
+            /// 创建一个遵守了 TaskConvertible 协议的对象
             let originalTask = DataRequest.Requestable(urlRequest: originalRequest!)
 
+            /// 1. 创建 URLSessionTask
+            /// 通过 TaskConvertible 协议方法来创建一个 URLSessionDataTask 对象，
+            /// - 可以理解为每个请求其实最终都是一个 URLSessionTask
             let task = try originalTask.task(session: session, adapter: adapter, queue: queue)
+            /// 2. 再创建一个 DataRequest对象
             let request = DataRequest(session: session, requestTask: .data(originalTask, task))
-
+            
+            /// 3. 将 URLSessionTask 与对应的 Request 建立绑定关系，
+            /// 方便其他地方可以很方便的通过 URLSessionTask 拿到 Request；
             delegate[task] = request
 
+            /// 4. 开始执行网络请求
             if startRequestsImmediately { request.resume() }
 
             return request
@@ -390,14 +399,21 @@ open class SessionManager {
     }
 
     // MARK: Private - Download Implementation
-
+    /// 上面那些下载的API，最终都调用到了这里,
+    /// 这里通过 Downloadable 枚举，来统一几种不同情况下的 API调用，
+    /// - 这种用枚举来消除参数差异的思想，在这个框架里用的很多
     private func download(
         _ downloadable: DownloadRequest.Downloadable,
         to destination: DownloadRequest.DownloadFileDestination?)
         -> DownloadRequest
     {
         do {
+            
+            /// 下面的处理流程跟上面 DataRequest处理流程几乎是一样的
+            ///
+            /// 创建 URLSessionDownloadTask
             let task = try downloadable.task(session: session, adapter: adapter, queue: queue)
+            /// 创建一个 DownloadRequest 对象，封装参数信息
             let download = DownloadRequest(session: session, requestTask: .download(downloadable, task))
 
             download.downloadDelegate.destination = destination
@@ -412,6 +428,7 @@ open class SessionManager {
         }
     }
 
+    /// 下载出错处理
     private func download(
         _ downloadable: DownloadRequest.Downloadable?,
         to destination: DownloadRequest.DownloadFileDestination?,
@@ -577,7 +594,7 @@ open class SessionManager {
             return upload(nil, failedWith: error)
         }
     }
-
+    
     // MARK: MultipartFormData
 
     /// Encodes `multipartFormData` using `encodingMemoryThreshold` and calls `encodingCompletion` with new
@@ -629,6 +646,12 @@ open class SessionManager {
         }
     }
 
+
+    /// 多表单上传逻辑最终都来到了这里
+    /**
+     理解上传`MultipartFormData`对内存的影响很重要。如果累积载荷比较小，那么在内存中编码数据并直接上传到服务器是目前为止最有效的方法。然而，如果有效载荷太大，在内存中编码数据可能会导致应用程序终止。较大的有效载荷必须首先使用输入和输出流写入磁盘，以保持较低的内存占用，然后数据才能从生成的文件中以流的形式上传。磁盘流必须用于较大的有效负载，如视频内容。
+     `encodingMemoryThreshold`参数允许Alamofire自动确定是在内存中编码还是从磁盘中编码。如果`MultipartFormData`的内容长度低于`encodingMemoryThreshold`，编码就会在内存中进行。如果内容长度超过阈值，则在编码过程中将数据流式传输到磁盘。然后根据使用的编码技术，将结果以数据或流的形式上传。
+     */
     /// Encodes `multipartFormData` using `encodingMemoryThreshold` and calls `encodingCompletion` with new
     /// `UploadRequest` using the `urlRequest`.
     ///
@@ -659,29 +682,34 @@ open class SessionManager {
         queue: DispatchQueue? = nil,
         encodingCompletion: ((MultipartFormDataEncodingResult) -> Void)?)
     {
+        /// 异步线程处理
         DispatchQueue.global(qos: .utility).async {
             let formData = MultipartFormData()
+            /// 调用multipartFormData闭包，将 formData 交给外面，让外面去做上传数据处理
             multipartFormData(formData)
 
             var tempFileURL: URL?
 
             do {
                 var urlRequestWithContentType = try urlRequest.asURLRequest()
+                /// 设置请求头 Content-Type
                 urlRequestWithContentType.setValue(formData.contentType, forHTTPHeaderField: "Content-Type")
 
                 let isBackgroundSession = self.session.configuration.identifier != nil
 
                 if formData.contentLength < encodingMemoryThreshold && !isBackgroundSession {
+                    /// 数据少时，直接在内存中进行解码
                     let data = try formData.encode()
 
                     let encodingResult = MultipartFormDataEncodingResult.success(
-                        request: self.upload(data, with: urlRequestWithContentType),
+                        request: self.upload(data, with: urlRequestWithContentType),// 创建Request
                         streamingFromDisk: false,
                         streamFileURL: nil
                     )
 
                     (queue ?? DispatchQueue.main).async { encodingCompletion?(encodingResult) }
                 } else {
+                    /// 数据多时，就先将数据data写入本地，然后再上传
                     let fileManager = FileManager.default
                     let tempDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
                     let directoryURL = tempDirectoryURL.appendingPathComponent("org.alamofire.manager/multipart.form.data")
@@ -704,9 +732,11 @@ open class SessionManager {
                     if let directoryError = directoryError { throw directoryError }
 
                     try formData.writeEncodedData(to: fileURL)
-
+                    /// 如果要上传的数据data比较大，那么就先将data写入本地，然后再以文件上传的形式来上传
                     let upload = self.upload(fileURL, with: urlRequestWithContentType)
 
+                    /// 往 delegate.queue 中添加任务，移除刚才写入本地的文件；
+                    /// delegate.queue 会在文件上传完成之后开启
                     // Cleanup the temp file once the upload is complete
                     upload.delegate.queue.addOperation {
                         do {
@@ -745,15 +775,17 @@ open class SessionManager {
 
     private func upload(_ uploadable: UploadRequest.Uploadable) -> UploadRequest {
         do {
+            /// 创建 URLSessionTask
             let task = try uploadable.task(session: session, adapter: adapter, queue: queue)
+            /// 创建 UploadRequest
             let upload = UploadRequest(session: session, requestTask: .upload(uploadable, task))
 
             if case let .stream(inputStream, _) = uploadable {
                 upload.delegate.taskNeedNewBodyStream = { _, _ in inputStream }
             }
-
+            /// 建立 task 与 Request的绑定关系
             delegate[task] = upload
-
+            /// 开始上传任务
             if startRequestsImmediately { upload.resume() }
 
             return upload
@@ -821,11 +853,15 @@ open class SessionManager {
     @available(iOS 9.0, macOS 10.11, tvOS 9.0, *)
     private func stream(_ streamable: StreamRequest.Streamable) -> StreamRequest {
         do {
+            /// 流数据上传处理流程，跟之前的 DataRequest、DownloadRequest是一样的思路
+            /// 先创建 URLSessionStreamTask
             let task = try streamable.task(session: session, adapter: adapter, queue: queue)
+            /// 封装 StreamRequest 对象
             let request = StreamRequest(session: session, requestTask: .stream(streamable, task))
 
+            /// 建立 绑定关系
             delegate[task] = request
-
+            
             if startRequestsImmediately { request.resume() }
 
             return request
@@ -845,15 +881,20 @@ open class SessionManager {
 
     // MARK: - Internal - Retry Request
 
+    /// 请求出错后重试
     func retry(_ request: Request) -> Bool {
         guard let originalTask = request.originalTask else { return false }
 
         do {
+            /// 创建一个新的 Request 对应的 URLSessionTask
             let task = try originalTask.task(session: session, adapter: adapter, queue: queue)
 
             if let originalTask = request.task {
+                /// 移除之前旧的绑定关系，因为重新请求之后，之前的Request已经用不到了
                 delegate[originalTask] = nil // removes the old request to avoid endless growth
             }
+            /// 上面移除旧的绑定关系之后，没有对新创建的再建立新的绑定，为什么呢？
+            /// - 绑定关系是在 allowRetrier 方法中处理的
 
             request.delegate.task = task // resets all task delegate data
 

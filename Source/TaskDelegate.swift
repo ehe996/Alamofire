@@ -26,10 +26,14 @@ import Foundation
 
 /// The task delegate is responsible for handling all delegate callbacks for the underlying task as well as
 /// executing all operations attached to the serial operation queue upon task completion.
+/// 任务委托负责处理底层任务的所有委托回调，以及在任务完成时执行附加到串行操作队列的所有操作。
+/// 处理URLSessionTask代理方法，
+/// 每个Request对应一个 URLSessionTask，每个 URLSessionTask 对应一个 TaskDelegate
 open class TaskDelegate: NSObject {
 
     // MARK: Properties
 
+    /// 用于在任务完成后执行所有操作的串行操作队列。
     /// The serial operation queue used to execute all operations after the task completes.
     public let queue: OperationQueue
 
@@ -41,6 +45,7 @@ open class TaskDelegate: NSObject {
 
     var task: URLSessionTask? {
         set {
+            /// 这里再嵌套使用 _task 的写法看起来多余，其实是为了访问 task的时候加锁，这样写之后，set 和 get方法都加锁了，task就是安全的
             taskLock.lock(); defer { taskLock.unlock() }
             _task = newValue
         }
@@ -66,8 +71,13 @@ open class TaskDelegate: NSObject {
         _task = task
 
         self.queue = {
+            /// 从这里可以看到，TaskDelegate 关联的 queue 是一个串行队列，并且创建之后默认是挂起状态
+            /**
+             这个queue的作用主要是处理 Response回调；将Response回调加入到这个queue中；由于queue是挂起状态，因此不会立即执行；
+             等到任务执行完成之后，再开启这个queue，让队列中的Response回调执行调用
+             */
             let operationQueue = OperationQueue()
-
+            
             operationQueue.maxConcurrentOperationCount = 1
             operationQueue.isSuspended = true
             operationQueue.qualityOfService = .utility
@@ -115,6 +125,8 @@ open class TaskDelegate: NSObject {
         var disposition: URLSession.AuthChallengeDisposition = .performDefaultHandling
         var credential: URLCredential?
 
+        /// ToUnderstand-❓- TaskDelegate中的 taskDidReceiveChallenge 在这个框架中没有看到赋值的地方；
+        /// 而且他还是 intelnal 级别的，那么他岂不是永远都是 nil？
         if let taskDidReceiveChallenge = taskDidReceiveChallenge {
             (disposition, credential) = taskDidReceiveChallenge(session, task, challenge)
         } else if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
@@ -146,6 +158,7 @@ open class TaskDelegate: NSObject {
         completionHandler(disposition, credential)
     }
 
+    /// 上传时用到
     @objc(URLSession:task:needNewBodyStream:)
     func urlSession(
         _ session: URLSession,
@@ -161,22 +174,30 @@ open class TaskDelegate: NSObject {
         completionHandler(bodyStream)
     }
 
+    /// URLSessionDelegate的 (URLSession:task:didCompleteWithError:) 代理方法回调时，
+    /// 在 SessionDelegate 中会主动调用下面的这个方法，告诉这里请求任务结束了
     @objc(URLSession:task:didCompleteWithError:)
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        /// 如果外面实现了 taskDidCompleteWithError 闭包接管了处理，那么就通过闭包回调就行
         if let taskDidCompleteWithError = taskDidCompleteWithError {
             taskDidCompleteWithError(session, task, error)
         } else {
             if let error = error {
+                /// 出错时处理错误
                 if self.error == nil { self.error = error }
 
                 if
                     let downloadDelegate = self as? DownloadTaskDelegate,
                     let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
                 {
+                    /// 如果是下载任务，那么对断点数据进行保存
                     downloadDelegate.resumeData = resumeData
                 }
             }
-
+            /// 队列不再Suspended，也就是说之前加入队列中的操作，接下来都会依次被执行；
+            /// 这也就解释了之前疑惑的一个问题：
+            /// - 任务完成操作的回调加入队列，那么是如何保证这些回调任务是在任务完成之后别回调的呢？
+            /// - 这里就是答案，任务完成之后，会将队列停止挂起，开始执行
             queue.isSuspended = false
         }
     }

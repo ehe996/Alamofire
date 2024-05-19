@@ -110,6 +110,8 @@ extension URLRequest {
         }
     }
 
+    /// 适配器，如果外面有实现适配器，交给适配器处理，然后返回处理之后的结果
+    /// 否则就返回自身
     func adapt(using adapter: RequestAdapter?) throws -> URLRequest {
         guard let adapter = adapter else { return self }
         return try adapter.adapt(self)

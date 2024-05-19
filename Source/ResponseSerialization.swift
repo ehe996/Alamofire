@@ -36,10 +36,16 @@ public protocol DataResponseSerializerProtocol {
 // MARK: -
 
 /// A generic `DataResponseSerializerType` used to serialize a request, response, and data into a serialized object.
+/// 一个通用的`DataResponseSerializerType`，用于将请求、响应和数据序列化为序列化对象。
+///
+/// 这个strut主要功能可以理解为持有一个闭包，主要的逻辑都在这个闭包上了，传入请求相关参数，然后返回一个序列化之后的结果 Result<Value>；
+/// 为什么不让外界直接传入闭包，这里要用结构体再封装一层？
+/// - 主要是因为用结构体实现了 DataResponseSerializerProtocol 协议，来达到让序列化器协议化，这样协议化之后的对象在外界传参更方便；
 public struct DataResponseSerializer<Value>: DataResponseSerializerProtocol {
     /// The type of serialized object to be created by this `DataResponseSerializer`.
     public typealias SerializedObject = Value
 
+    /// 实现协议，这里的闭包变量是初始化时传进来的
     /// A closure used by response handlers that takes a request, response, data and error and returns a result.
     public var serializeResponse: (URLRequest?, HTTPURLResponse?, Data?, Error?) -> Result<Value>
 
@@ -60,12 +66,14 @@ public protocol DownloadResponseSerializerProtocol {
     /// The type of serialized object to be created by this `DownloadResponseSerializerType`.
     associatedtype SerializedObject
 
+    /// 根据上面 DataResponseSerializerProtocol 的唯一区别就是，闭包传入的第3个参数，上面是 Data类型，这里是 URL 类型
     /// A closure used by response handlers that takes a request, response, url and error and returns a result.
     var serializeResponse: (URLRequest?, HTTPURLResponse?, URL?, Error?) -> Result<SerializedObject> { get }
 }
 
 // MARK: -
 
+/// 实现思路跟上面的 DataResponseSerializer 是一致的
 /// A generic `DownloadResponseSerializerType` used to serialize a request, response, and data into a serialized object.
 public struct DownloadResponseSerializer<Value>: DownloadResponseSerializerProtocol {
     /// The type of serialized object to be created by this `DownloadResponseSerializer`.
@@ -105,6 +113,7 @@ extension Request {
 
 extension DataRequest {
     /// Adds a handler to be called once the request has finished.
+    /// 添加一个在请求完成时调用的Handler。
     ///
     /// - parameter queue:             The queue on which the completion handler is dispatched.
     /// - parameter completionHandler: The code to be executed once the request has finished.
@@ -112,6 +121,10 @@ extension DataRequest {
     /// - returns: The request.
     @discardableResult
     public func response(queue: DispatchQueue? = nil, completionHandler: @escaping (DefaultDataResponse) -> Void) -> Self {
+        /// 这里直接添加了一个Response回调任务放到了delegate.queue中，回调 DefaultDataResponse
+        /// 等到 Request结束之后，队列就会开启，执行已加入队列中的回调任务
+        /// 如何保证回调时在请求任务结束之后再调用的？
+        /// - delegate.queue在创建时已经将他挂起了，等到请求完成的代理方法中再结束挂起状态，开始执行队列中的任务，
         delegate.queue.addOperation {
             (queue ?? DispatchQueue.main).async {
                 var dataResponse = DefaultDataResponse(
@@ -132,6 +145,8 @@ extension DataRequest {
     }
 
     /// Adds a handler to be called once the request has finished.
+    /// 添加一个在请求完成时调用的Handler。
+    /// 这里序列化器是用泛型+协议进行抽象，可以传不同的序列化器；不同的序列化需求，最终都会调用到这里
     ///
     /// - parameter queue:              The queue on which the completion handler is dispatched.
     /// - parameter responseSerializer: The response serializer responsible for serializing the request, response,
@@ -147,13 +162,15 @@ extension DataRequest {
         -> Self
     {
         delegate.queue.addOperation {
+            /// 通过序列化器拿到序列化之后的结果；
             let result = responseSerializer.serializeResponse(
                 self.request,
                 self.response,
                 self.delegate.data,
                 self.delegate.error
             )
-
+            
+            /// 再将信息汇总包装成一个 DataResponse 对象
             var dataResponse = DataResponse<T.SerializedObject>(
                 request: self.request,
                 response: self.response,
@@ -164,6 +181,7 @@ extension DataRequest {
 
             dataResponse.add(self.delegate.metrics)
 
+            /// 包装成 DataResponse 类型，然后回调出去
             (queue ?? DispatchQueue.main).async { completionHandler(dataResponse) }
         }
 
@@ -171,6 +189,7 @@ extension DataRequest {
     }
 }
 
+/// 这里的实现思路同上面是一样的，只是参数不同
 extension DownloadRequest {
     /// Adds a handler to be called once the request has finished.
     ///
@@ -247,10 +266,14 @@ extension DownloadRequest {
     }
 }
 
-// MARK: - Data
+// MARK: - Data 将请求结果序列化成data
 
+/// 下面这段代码的阅读顺序，按照 步骤一、二、三 来阅读更清晰
 extension Request {
+    /// 步骤三：
     /// Returns a result data type that contains the response data as-is.
+    /// 按原样返回包含响应数据的结果数据类型。也就是将 Data 转成 Result<Data>
+    /// 静态方法，便捷构造
     ///
     /// - parameter response: The response from the server.
     /// - parameter data:     The data returned from the server.
@@ -265,22 +288,29 @@ extension Request {
         guard let validData = data else {
             return .failure(AFError.responseSerializationFailed(reason: .inputDataNil))
         }
-
+        /// 这里序列化器并没有做什么事情，将传入的data 用 枚举包装之后原样返回
         return .success(validData)
     }
 }
 
 extension DataRequest {
+    /// 步骤二：
     /// Creates a response serializer that returns the associated data as-is.
+    /// 创建一个按原样返回相关数据的响应序列化器。
+    /// 静态方法，便捷构造（这里是对 DataRequest 扩展的一个方法，方便构造 DataResponseSerializer 对象）
     ///
     /// - returns: A data response serializer.
     public static func dataResponseSerializer() -> DataResponseSerializer<Data> {
+        /// 创建一个 DataResponseSerializer 对象，传入一个闭包
         return DataResponseSerializer { _, response, data, error in
-            return Request.serializeResponseData(response: response, data: data, error: error)
+            /// 闭包被调用时，返回一个 Result<Data> 对象回去
+            return Request.serializeResponseData(response: response, data: data, error: error)/// 步骤三：返回序列化结果
         }
     }
 
+    /// 步骤一
     /// Adds a handler to be called once the request has finished.
+    /// 添加一个在请求完成时调用的handler。
     ///
     /// - parameter completionHandler: The code to be executed once the request has finished.
     ///
@@ -291,14 +321,17 @@ extension DataRequest {
         completionHandler: @escaping (DataResponse<Data>) -> Void)
         -> Self
     {
+        /// 方法体与下面被调用的方法，之前的区别就在于少了一个 responseSerializer 参数；
+        /// 可以理解为 这里传入了一个默认实现的序列化器，用户在调用时不用再传了，用户在就可以少传一个 responseSerializer 参数
         return response(
             queue: queue,
-            responseSerializer: DataRequest.dataResponseSerializer(),
+            responseSerializer: DataRequest.dataResponseSerializer(),//步骤二： 这里传入一个 便捷构造的默认dataResponseSerializer 序列化器
             completionHandler: completionHandler
         )
     }
 }
 
+/// 这里 DownloadRequest扩展里的方法实现思路跟上面DataRequest是一样的
 extension DownloadRequest {
     /// Creates a response serializer that returns the associated data as-is.
     ///
@@ -339,7 +372,8 @@ extension DownloadRequest {
     }
 }
 
-// MARK: - String
+// MARK: - 后面的 String、json、Property 序列化逻辑思路，跟上面的Data序列化完全一样，区别只是在于对 Data的处理方式
+// MARK: - String 请求结果序列化成String
 
 extension Request {
     /// Returns a result string type initialized from the response data with the specified string encoding.
@@ -375,7 +409,7 @@ extension Request {
         }
 
         let actualEncoding = convertedEncoding ?? .isoLatin1
-
+        /// 将传入的 data 序列化成 String类型，然后返回
         if let string = String(data: validData, encoding: actualEncoding) {
             return .success(string)
         } else {
@@ -496,6 +530,7 @@ extension Request {
             return .failure(AFError.responseSerializationFailed(reason: .inputDataNilOrZeroLength))
         }
 
+        /// 将 data 序列化成 json对象，然后返回
         do {
             let json = try JSONSerialization.jsonObject(with: validData, options: options)
             return .success(json)
@@ -522,6 +557,7 @@ extension DataRequest {
     }
 
     /// Adds a handler to be called once the request has finished.
+    /// 外界最常用的方法
     ///
     /// - parameter options:           The JSON serialization reading options. Defaults to `.allowFragments`.
     /// - parameter completionHandler: A closure to be executed once the request has finished.
@@ -536,7 +572,7 @@ extension DataRequest {
     {
         return response(
             queue: queue,
-            responseSerializer: DataRequest.jsonResponseSerializer(options: options),
+            responseSerializer: DataRequest.jsonResponseSerializer(options: options),// 传入便捷构造的json序列化器
             completionHandler: completionHandler
         )
     }
@@ -617,6 +653,7 @@ extension Request {
             return .failure(AFError.responseSerializationFailed(reason: .inputDataNilOrZeroLength))
         }
 
+        /// 将data 转换成 PropertyList 然后返回
         do {
             let plist = try PropertyListSerialization.propertyList(from: validData, options: options, format: nil)
             return .success(plist)

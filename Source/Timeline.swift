@@ -25,6 +25,7 @@
 import Foundation
 
 /// Responsible for computing the timing metrics for the complete lifecycle of a `Request`.
+/// 负责计算`Request`整个生命周期的计时指标。
 public struct Timeline {
     /// The time the request was initialized.
     public let requestStartTime: CFAbsoluteTime
@@ -39,15 +40,18 @@ public struct Timeline {
     public let serializationCompletedTime: CFAbsoluteTime
 
     /// The time interval in seconds from the time the request started to the initial response from the server.
+    /// 从请求开始到服务器初始响应的时间间隔，以秒为单位。
     public let latency: TimeInterval
 
     /// The time interval in seconds from the time the request started to the time the request completed.
     public let requestDuration: TimeInterval
 
     /// The time interval in seconds from the time the request completed to the time response serialization completed.
+    /// 从请求开始到请求完成的时间间隔，单位为秒。
     public let serializationDuration: TimeInterval
 
     /// The time interval in seconds from the time the request started to the time response serialization completed.
+    /// 从请求开始到响应序列化完成的时间间隔，以秒为单位。
     public let totalDuration: TimeInterval
 
     /// Creates a new `Timeline` instance with the specified request times.

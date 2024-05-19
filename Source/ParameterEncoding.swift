@@ -59,6 +59,13 @@ public protocol ParameterEncoding {
 
 // MARK: -
 
+/// 创建一个URL编码的查询字符串，将其设置为或附加到任何现有的URL查询字符串中，或设置为URL请求的HTTP主体。
+/// 查询字符串是被设置、添加到任何现有URL查询字符串中，还是被设置为HTTP正文，这取决于编码的目标。
+/// 带有HTTP正文的编码请求的`Content-Type` HTTP头字段被设置为`application/x-www-form-urlencoded;charset = utf - 8”。
+/// 没有发布的规范说明如何编码集合类型。默认情况下，数组值会在键后面加上' []' (' foo[]=1&foo[]=2 ')，嵌套的字典值会在键后面加上方括号(' foo[bar]=baz ')。
+/// 可选地，`ArrayEncoding`可以用来省略数组键后面的方括号。`
+/// BoolEncoding`可以用来配置布尔值的编码方式。默认行为是将`true`编码为1，将`false`编码为0。
+///
 /// Creates a url-encoded query string to be set as or appended to any existing URL query string or set as the HTTP
 /// body of the URL request. Whether the query string is set or appended to any existing URL query string or set as
 /// the HTTP body depends on the destination of the encoding.
@@ -175,16 +182,22 @@ public struct URLEncoding: ParameterEncoding {
         var urlRequest = try urlRequest.asURLRequest()
 
         guard let parameters = parameters else { return urlRequest }
-
+        
+        /// URL编码，这里简单来说就是：
+        /// - GET 请求是将编码之后的参数拼接在URL后面
+        /// - POST 请求是将编码之后的参数转换成 data然后放到 httpBody 中，并且在请求头中设置Content-Type的值为
+        ///      application/x-www-form-urlencoded; charset=utf-8
         if let method = HTTPMethod(rawValue: urlRequest.httpMethod ?? "GET"), encodesParametersInURL(with: method) {
             guard let url = urlRequest.url else {
                 throw AFError.parameterEncodingFailed(reason: .missingURL)
             }
 
             if var urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false), !parameters.isEmpty {
+                /// 拿到 urlComponents.percentEncodedQuery（经过百分号编码之后的 query参数）
+                /// URL只支持 ASSIC码，因此需要进行编码处理，他不支持Unicode
                 let percentEncodedQuery = (urlComponents.percentEncodedQuery.map { $0 + "&" } ?? "") + query(parameters)
-                urlComponents.percentEncodedQuery = percentEncodedQuery
-                urlRequest.url = urlComponents.url
+                urlComponents.percentEncodedQuery = percentEncodedQuery /// 将编码之后的结果给回去
+                urlRequest.url = urlComponents.url /// 更新request的url，编码之后的url
             }
         } else {
             if urlRequest.value(forHTTPHeaderField: "Content-Type") == nil {
@@ -204,6 +217,7 @@ public struct URLEncoding: ParameterEncoding {
     ///
     /// - returns: The percent-escaped, URL encoded query string components.
     public func queryComponents(fromKey key: String, value: Any) -> [(String, String)] {
+        /// 递归处理url参数
         var components: [(String, String)] = []
 
         if let dictionary = value as? [String: Any] {
@@ -248,6 +262,7 @@ public struct URLEncoding: ParameterEncoding {
         let subDelimitersToEncode = "!$&'()*+,;="
 
         var allowedCharacterSet = CharacterSet.urlQueryAllowed
+        /// 这里移除了上面的2个符号集合里面的符号
         allowedCharacterSet.remove(charactersIn: "\(generalDelimitersToEncode)\(subDelimitersToEncode)")
 
         var escaped = ""
@@ -262,8 +277,8 @@ public struct URLEncoding: ParameterEncoding {
         //      - https://github.com/Alamofire/Alamofire/issues/206
         //
         //==========================================================================================================
-
         if #available(iOS 8.3, *) {
+            /// 字符串编码处理
             escaped = string.addingPercentEncoding(withAllowedCharacters: allowedCharacterSet) ?? string
         } else {
             let batchSize = 50
@@ -292,6 +307,7 @@ public struct URLEncoding: ParameterEncoding {
             let value = parameters[key]!
             components += queryComponents(fromKey: key, value: value)
         }
+        /// 将编码之后的参数信息进行拼接处理
         return components.map { "\($0)=\($1)" }.joined(separator: "&")
     }
 
@@ -304,7 +320,7 @@ public struct URLEncoding: ParameterEncoding {
         default:
             break
         }
-
+        /// 这个方法是用来判断有哪些情况需要将参数拼接在url后面；从这个方法可以看出，只有 get、head、delete方法需要这样处理；
         switch method {
         case .get, .head, .delete:
             return true
@@ -358,6 +374,7 @@ public struct JSONEncoding: ParameterEncoding {
         guard let parameters = parameters else { return urlRequest }
 
         do {
+            /// 对参数进行json序列化处理
             let data = try JSONSerialization.data(withJSONObject: parameters, options: options)
 
             if urlRequest.value(forHTTPHeaderField: "Content-Type") == nil {

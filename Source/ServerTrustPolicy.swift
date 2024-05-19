@@ -24,7 +24,9 @@
 
 import Foundation
 
+/// 下面这些处理，适用于自签证书，如果用的是CA证书，则不用处理
 /// Responsible for managing the mapping of `ServerTrustPolicy` objects to a given host.
+/// 负责管理`ServerTrustPolicy`对象到给定主机的映射
 open class ServerTrustPolicyManager {
     /// The dictionary of policies mapped to a particular host.
     public let policies: [String: ServerTrustPolicy]
@@ -73,6 +75,22 @@ extension URLSession {
     }
 }
 
+/**
+ 当通过安全HTTPS连接到服务器时，`ServerTrustPolicy`评估通常由`NSURLAuthenticationChallenge`提供的服务器信任。然后，策略配置使用一组给定的标准评估服务器信任，以确定服务器信任是否有效，以及是否应该建立连接。
+ 
+ 使用固定证书或公钥进行评估有助于防止中间人(man-in-the-middle, MITM)攻击和其他漏洞。强烈建议处理敏感客户数据或财务信息的应用程序通过启用钉扎的HTTPS连接路由所有通信。
+ 
+ —performDefaultEvaluation:使用默认的服务器信任评估，同时允许您控制是否验证挑战提供的主机。鼓励应用程序在生产环境中始终验证主机，以保证服务器证书链的有效性。
+ - performrevoke贬值:使用默认和已撤销的服务器信任评估，允许您控制是否验证挑战提供的主机，以及指定测试已撤销证书的吊销标志。直到iOS 10.1、macOS 10.12和tvOS 10.1，苹果平台才开始自动测试吊销证书，我们的TLS测试已经证明了这一点。鼓励应用程序在生产环境中始终验证主机，以保证服务器证书链的有效性。
+ —pinCertificates:使用被钉扎的证书来验证服务器信任。如果其中一个被钉扎的证书与其中一个服务器证书匹配，则认为服务器信任有效。
+ 通过同时验证证书链和主机，证书钉扎提供了一种非常安全的服务器信任验证形式，可以缓解大多数(如果不是全部的话)中间人攻击。
+ 鼓励应用程序在生产环境中始终验证主机并要求有效的证书链。
+ —pinPublicKeys:使用固定的公钥来验证服务器信任。如果钉扎的其中一个公钥与服务器证书的一个公钥匹配，则认为服务器信任有效。
+ 通过同时验证证书链和主机，公钥钉扎提供了一种非常安全的服务器信任验证形式，可以缓解大多数(如果不是全部的话)中间人攻击。
+ 鼓励应用程序在生产环境中始终验证主机并要求有效的证书链。
+ - disableEvaluation:禁用所有评估，这些评估将始终认为任何服务器信任是有效的。
+ —自定义评估:使用关联的闭包来评估服务器信任的有效性。
+ */
 // MARK: - ServerTrustPolicy
 
 /// The `ServerTrustPolicy` evaluates the server trust generally provided by an `NSURLAuthenticationChallenge` when
@@ -122,6 +140,9 @@ public enum ServerTrustPolicy {
 
     // MARK: - Bundle Location
 
+    /// 读取项目main Bundle 中所有的证书文件；为了防止别人逆向拿到IPA包中的证书文件；可以将证书文件打包到静态库中，不对外暴漏；
+    /// 然后静态库中提供接口获取 [SecCertificate]
+    /// 
     /// Returns all certificates within the given bundle with a `.cer` file extension.
     ///
     /// - parameter bundle: The bundle to search for all `.cer` files.

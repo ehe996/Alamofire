@@ -89,7 +89,7 @@ extension Request {
     }
 
     // MARK: Status Code
-
+    /// 状态码校验
     fileprivate func validate<S: Sequence>(
         statusCode acceptableStatusCodes: S,
         response: HTTPURLResponse)
@@ -105,7 +105,7 @@ extension Request {
     }
 
     // MARK: Content Type
-
+    /// contentType 校验
     fileprivate func validate<S: Sequence>(
         contentType acceptableContentTypes: S,
         response: HTTPURLResponse,
@@ -162,22 +162,27 @@ extension DataRequest {
     /// Validates the request, using the specified closure.
     ///
     /// If validation fails, subsequent calls to response handlers will have an associated error.
+    /// 如果验证失败，后续对响应处理程序的调用将有相关的错误。
     ///
     /// - parameter validation: A closure to validate the request.
     ///
     /// - returns: The request.
     @discardableResult
     public func validate(_ validation: @escaping Validation) -> Self {
+        /// 创建一个校验闭包任务
         let validationExecution: () -> Void = { [unowned self] in
+            /// 开始校验
             if
                 let response = self.response,
                 self.delegate.error == nil,
+                /// 调用外界传入的校验闭包获取校验结果
                 case let .failure(error) = validation(self.request, response, self.delegate.data)
             {
+                /// 如果校验失败，给delegate.error赋值 （校验成功什么也不用做）
                 self.delegate.error = error
             }
         }
-
+        /// 添加一个校验闭包任务
         validations.append(validationExecution)
 
         return self
